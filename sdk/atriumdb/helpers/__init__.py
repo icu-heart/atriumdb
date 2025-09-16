@@ -16,6 +16,8 @@
 #     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 from importlib import resources
+
+from atriumdb.sdk import atriumdb
 try:
     import tomllib
 except ModuleNotFoundError:
@@ -23,14 +25,11 @@ except ModuleNotFoundError:
 
 
 _cfg = tomllib.loads(resources.read_text("atriumdb.helpers", "config.toml"))
-_shared_lib_linux_name = _cfg["resources"]["shared_lib_filename_linux"].split("/")[-1]
-_shared_lib_windows_name = _cfg["resources"]["shared_lib_filename_windows"].split("/")[-1]
+_shared_lib_filename_linux = _cfg["resources"]["shared_lib_filename_linux"]
+_shared_lib_filename_windows = _cfg["resources"]["shared_lib_filename_windows"]
 
-def get_shared_lib_path(platform: str):
-    if platform == "win32":
-        return resources.files("atriumdb.bin").joinpath(_shared_lib_windows_name)
-    else:
-        return resources.files("atriumdb.bin").joinpath(_shared_lib_linux_name)
+shared_lib_path_linux = resources.files(atriumdb.bin).joinpath(_shared_lib_filename_linux)
+shared_lib_path_windows = resources.files(atriumdb.bin).joinpath(_shared_lib_filename_windows)
 
 protected_mode_default_setting = _cfg["settings"]["protected_mode"]
 overwrite_default_setting = _cfg["settings"]["overwrite"]
