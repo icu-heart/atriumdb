@@ -21,9 +21,18 @@ try:
 except ModuleNotFoundError:
     import tomli as tomllib
 
-_cfg = tomllib.loads(resources.read_text("atriumdb.helpers", "config.toml"))
-shared_lib_filename_linux = _cfg["resources"]["shared_lib_filename_linux"]
-shared_lib_filename_windows = _cfg["resources"]["shared_lib_filename_windows"]
 
+_cfg = tomllib.loads(resources.read_text("atriumdb.helpers", "config.toml"))
+_shared_lib_linux_name = _cfg["resources"]["shared_lib_filename_linux"].split("/")[-1]
+_shared_lib_windows_name = _cfg["resources"]["shared_lib_filename_windows"].split("/")[-1]
+
+def get_shared_lib_path(platform: str):
+    if platform == "win32":
+        return resources.files("atriumdb.bin").joinpath(_shared_lib_windows_name)
+    else:
+        return resources.files("atriumdb.bin").joinpath(_shared_lib_linux_name)
+
+protected_mode_default_setting = _cfg["settings"]["protected_mode"]
+overwrite_default_setting = _cfg["settings"]["overwrite"]
 protected_mode_default_setting = _cfg["settings"]["protected_mode"]
 overwrite_default_setting = _cfg["settings"]["overwrite"]

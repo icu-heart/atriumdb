@@ -159,14 +159,10 @@ class AtriumSDK:
         # Set the C DLL path based on the platform if not provided
         if platform.system() == "Darwin":
             raise OSError("AtriumSDK is not currently supported on macOS.")
-        if atriumdb_lib_path is None:
-            if sys.platform == "win32":
-                shared_lib_filename = shared_lib_filename_windows
-            else:
-                shared_lib_filename = shared_lib_filename_linux
 
-            this_file_path = Path(__file__)
-            atriumdb_lib_path = this_file_path.parent.parent / shared_lib_filename
+        from atriumdb.helpers import get_shared_lib_path
+        if atriumdb_lib_path is None:
+            atriumdb_lib_path = get_shared_lib_path(sys.platform)
 
         # Initialize the block object with the C DLL path and number of threads
         self.block = Block(atriumdb_lib_path, num_threads)
