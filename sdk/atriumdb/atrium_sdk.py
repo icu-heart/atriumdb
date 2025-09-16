@@ -33,7 +33,7 @@ from atriumdb.block import Block, create_gap_arr
 from atriumdb.block_wrapper import T_TYPE_GAP_ARRAY_INT64_INDEX_DURATION_NANO, V_TYPE_INT64, V_TYPE_DELTA_INT64, \
     V_TYPE_DOUBLE, T_TYPE_TIMESTAMP_ARRAY_INT64_NANO, BlockMetadataWrapper
 from atriumdb.file_api import AtriumFileHandler
-from atriumdb.helpers import shared_lib_filename_windows, shared_lib_filename_linux, protected_mode_default_setting, \
+from atriumdb.helpers import get_shared_lib_path, protected_mode_default_setting, \
     overwrite_default_setting
 from atriumdb.helpers.settings import ALLOWABLE_OVERWRITE_SETTINGS, PROTECTED_MODE_SETTING_NAME, OVERWRITE_SETTING_NAME, \
     ALLOWABLE_PROTECTED_MODE_SETTINGS
@@ -160,7 +160,6 @@ class AtriumSDK:
         if platform.system() == "Darwin":
             raise OSError("AtriumSDK is not currently supported on macOS.")
 
-        from atriumdb.helpers import get_shared_lib_path
         if atriumdb_lib_path is None:
             atriumdb_lib_path = get_shared_lib_path(sys.platform)
 
