@@ -21,6 +21,7 @@ id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
 tag VARCHAR(64) NOT NULL,
 name VARCHAR(255) NULL,
 freq_nhz BIGINT NOT NULL,
+period_ns BIGINT NULL,
 code VARCHAR(64) NULL,
 unit VARCHAR(64) NOT NULL,
 unit_label VARCHAR(255) NULL,
@@ -109,7 +110,7 @@ CREATE TABLE IF NOT EXISTS bed (
 maria_patient_create_query = """
 CREATE TABLE IF NOT EXISTS patient (
   id INT UNSIGNED auto_increment PRIMARY KEY,
-  mrn INT UNSIGNED NULL,
+  mrn VARCHAR(255) NULL,
   gender VARCHAR(1) NULL,
   dob bigint NULL,
   first_name VARCHAR(255) NULL,

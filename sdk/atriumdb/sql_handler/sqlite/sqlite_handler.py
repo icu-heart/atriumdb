@@ -152,6 +152,84 @@ class SQLiteHandler(SQLHandler):
         cursor.close()
         conn.close()
 
+    def _column_exists(self, cursor, table_name: str, column_name: str) -> bool:
+        """Check if a column exists in a table."""
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        columns = [row[1] for row in cursor.fetchall()]
+        return column_name in columns
+
+    def update_measure_schema(self):
+        """Add period_ns column to measure table if it doesn't exist."""
+        with self.connection() as (conn, cursor):
+            if not self._column_exists(cursor, 'measure', 'period_ns'):
+                cursor.execute("""
+                    ALTER TABLE measure 
+                    ADD COLUMN period_ns INTEGER NULL
+                """)
+                conn.commit()
+                return True
+            return False
+
+    def check_mrn_column_is_text(self) -> bool:
+        """Check if the mrn column in the patient table is TEXT. Returns True if it is TEXT."""
+        with self.connection() as (conn, cursor):
+            cursor.execute("PRAGMA table_info(patient)")
+            for row in cursor.fetchall():
+                # row format: (cid, name, type, notnull, dflt_value, pk)
+                if row[1] == 'mrn':
+                    return row[2].upper() == 'TEXT'
+        return False
+
+    def upgrade_mrn_schema(self):
+        """Upgrade the patient table mrn column from INTEGER to TEXT if needed.
+
+        SQLite does not support ALTER COLUMN, so we must recreate the table.
+        """
+        if self.check_mrn_column_is_text():
+            return False  # Already TEXT, no upgrade needed
+
+        with self.connection() as (conn, cursor):
+            cursor.execute("PRAGMA foreign_keys = OFF")
+
+            # Create a new patient table with TEXT mrn
+            cursor.execute("""
+                CREATE TABLE patient_new (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  mrn TEXT NULL UNIQUE,
+                  gender TEXT NULL,
+                  dob INTEGER NULL,
+                  first_name TEXT NULL,
+                  middle_name TEXT NULL,
+                  last_name TEXT NULL,
+                  first_seen INTEGER NULL DEFAULT (STRFTIME('%s','NOW')),
+                  last_updated INTEGER NULL,
+                  source_id INTEGER DEFAULT 1 NULL,
+                  weight REAL NULL,
+                  height REAL NULL,
+                  FOREIGN KEY (source_id) REFERENCES source (id)
+                )
+            """)
+
+            # Copy data, casting mrn to TEXT
+            cursor.execute("""
+                INSERT INTO patient_new (id, mrn, gender, dob, first_name, middle_name, last_name,
+                    first_seen, last_updated, source_id, weight, height)
+                SELECT id, CAST(mrn AS TEXT), gender, dob, first_name, middle_name, last_name,
+                    first_seen, last_updated, source_id, weight, height
+                FROM patient
+            """)
+
+            # Drop old table and rename new one
+            cursor.execute("DROP TABLE patient")
+            cursor.execute("ALTER TABLE patient_new RENAME TO patient")
+
+            # Recreate the index
+            cursor.execute("CREATE INDEX IF NOT EXISTS source_id ON patient (source_id)")
+
+            cursor.execute("PRAGMA foreign_keys = ON")
+            conn.commit()
+            return True
+
     def interval_exists(self, measure_id, device_id, start_time_nano):
         with self.sqlite_db_connection() as (conn, cursor):
             cursor.execute(sqlite_interval_exists_query, (measure_id, device_id, start_time_nano))
@@ -165,10 +243,18 @@ class SQLiteHandler(SQLHandler):
         return rows
 
     def select_all_measures(self):
-        with self.sqlite_db_connection() as (conn, cursor):
-            cursor.execute("SELECT id, tag, name, freq_nhz, code, unit, unit_label, unit_code, source_id FROM measure")
-            rows = cursor.fetchall()
-        return rows
+        try:
+            with self.sqlite_db_connection() as (conn, cursor):
+                cursor.execute("SELECT id, tag, name, freq_nhz, period_ns, code, unit, unit_label, unit_code, source_id FROM measure")
+                rows = cursor.fetchall()
+            return rows
+        except sqlite3.Error as e:
+            if "period_ns" in str(e).lower() or "no such column" in str(e).lower():
+                raise ValueError(
+                    "The 'period_ns' column is missing from the measure table. "
+                    "Please run AtriumSDK(auto_upgrade=True) to update the database schema."
+                ) from e
+            raise
 
     def select_all_patients(self):
         with self.sqlite_db_connection() as (conn, cursor):
@@ -178,29 +264,45 @@ class SQLiteHandler(SQLHandler):
 
     def insert_measure(self, measure_tag: str, freq_nhz: int, units: str = None, measure_name: str = None,
                        measure_id=None, code: str = None, unit_label: str = None, unit_code: str = None,
-                       source_id: int = None):
+                       source_id: int = None, period_ns: int = None):
         units = "" if units is None else units
 
-        with self.connection() as (conn, cursor):
-            cursor.execute(
-                "INSERT OR IGNORE INTO measure (id, tag, freq_nhz, unit, name, code, unit_label, unit_code, source_id) VALUES "
-                "(?, ?, ?, ?, ?, ?, ?, ?, ?);",
-                (measure_id, measure_tag, freq_nhz, units, measure_name, code, unit_label, unit_code, source_id))
-            conn.commit()
-
-            return cursor.lastrowid
+        try:
+            with self.connection() as (conn, cursor):
+                cursor.execute(
+                    "INSERT OR IGNORE INTO measure (id, tag, freq_nhz, period_ns, unit, name, code, unit_label, unit_code, source_id) VALUES "
+                    "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
+                    (measure_id, measure_tag, freq_nhz, period_ns, units, measure_name, code, unit_label, unit_code,
+                     source_id))
+                conn.commit()
+                return cursor.lastrowid
+        except sqlite3.Error as e:
+            if "period_ns" in str(e).lower() or "no such column" in str(e).lower():
+                raise ValueError(
+                    "The 'period_ns' column is missing from the measure table. "
+                    "Please run AtriumSDK(auto_upgrade=True) to update the database schema."
+                ) from e
+            raise
 
     def select_measure(self, measure_id: int = None, measure_tag: str = None, freq_nhz: int = None, units: str = None):
         units = DEFAULT_UNITS if units is None else units
 
-        with self.sqlite_db_connection() as (conn, cursor):
-            if measure_id is not None:
-                cursor.execute(sqlite_select_measure_from_id_query, (measure_id,))
-            else:
-                cursor.execute(sqlite_select_measure_from_triplet_query,
-                               (measure_tag, freq_nhz, units))
-            row = cursor.fetchone()
-        return row
+        try:
+            with self.sqlite_db_connection() as (conn, cursor):
+                if measure_id is not None:
+                    cursor.execute(sqlite_select_measure_from_id_query, (measure_id,))
+                else:
+                    cursor.execute(sqlite_select_measure_from_triplet_query,
+                                   (measure_tag, freq_nhz, units))
+                row = cursor.fetchone()
+            return row
+        except sqlite3.Error as e:
+            if "period_ns" in str(e).lower() or "no such column" in str(e).lower():
+                raise ValueError(
+                    "The 'period_ns' column is missing from the measure table. "
+                    "Please run AtriumSDK(auto_upgrade=True) to update the database schema."
+                ) from e
+            raise
 
     def insert_device(self, device_tag: str, device_name: str = None, device_id=None, manufacturer: str = None,
                       model: str = None, device_type: str = None, bed_id: int = None, source_id: int = None):
@@ -448,7 +550,21 @@ class SQLiteHandler(SQLHandler):
                     cursor.execute(block_query, args)
                     block_results.extend(cursor.fetchall())
 
-            return block_results
+            # Filter results based on start_time_n and end_time_n parameters
+            filtered_results = []
+            for row in block_results:
+                row_start_time = row[6]  # start_time_n
+                row_end_time = row[7]  # end_time_n
+
+                # Check for overlap with parameter time range
+                if start_time_n is not None and row_end_time < start_time_n:
+                    continue  # Row ends before parameter start - no overlap
+                if end_time_n is not None and row_start_time > end_time_n:
+                    continue  # Row starts after parameter end - no overlap
+
+                filtered_results.append(row)
+
+            return filtered_results
 
         # Query by device.
         block_query = """
@@ -475,7 +591,7 @@ class SQLiteHandler(SQLHandler):
             cursor.execute(block_query, args)
             return cursor.fetchall()
 
-    def select_encounters(self, patient_id_list: List[int] = None, mrn_list: List[int] = None, start_time: int = None,
+    def select_encounters(self, patient_id_list: List[int] = None, mrn_list: List[str] = None, start_time: int = None,
                           end_time: int = None):
         assert (patient_id_list is None) != (
                 mrn_list is None), "Either patient_id_list or mrn_list must be provided, but not both"
@@ -513,7 +629,7 @@ class SQLiteHandler(SQLHandler):
             rows = cursor.fetchall()
         return rows
 
-    def select_all_patients_in_list(self, patient_id_list: List[int] = None, mrn_list: List[int] = None):
+    def select_all_patients_in_list(self, patient_id_list: List[int] = None, mrn_list: List[str] = None):
         assert (patient_id_list is None) != (mrn_list is None), \
             "only one of patient_id_list and mrn_list can be specified."
         if patient_id_list is not None:

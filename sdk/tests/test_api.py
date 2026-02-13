@@ -57,9 +57,9 @@ def _test_api(db_type, dataset_location, connection_params):
     # change the sdk token expiry so the test can work
     api_sdk.token_expiry = time.time() + 1_000_000
 
-    write_mit_bih_to_dataset(sdk, max_records=MAX_RECORDS, seed=SEED)
+    write_mit_bih_to_dataset(sdk, max_records=MAX_RECORDS, seed=SEED, use_period=True)
 
-    assert_mit_bih_to_dataset(api_sdk, max_records=MAX_RECORDS, seed=SEED)
+    assert_mit_bih_to_dataset(api_sdk, max_records=MAX_RECORDS, seed=SEED, use_period=True)
 
     # close api connection
     api_sdk.close()
@@ -162,7 +162,7 @@ def _test_api_labels(db_type, dataset_location, connection_params):
         api_sdk._request("GET", "/labels/name", params={'label_name_id': 1, 'label_name': "Supraventricular Tachycardia"})
 
     start_time, end_time = 1000, 2000
-    patient_id = sdk.insert_patient(mrn=1234567, first_name="Sterling", middle_name="Malory", last_name="Archer",
+    patient_id = sdk.insert_patient(mrn="1234567", first_name="Sterling", middle_name="Malory", last_name="Archer",
                                     dob=283901400000000, weight=83.461, weight_units='kg', height=188, height_units='cm')
 
     # should raise not implemented error since there is no api mode for insertion

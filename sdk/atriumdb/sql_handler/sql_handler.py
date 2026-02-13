@@ -34,6 +34,26 @@ class SQLHandler(ABC):
         pass
 
     @abstractmethod
+    def update_measure_schema(self):
+        """Add period_ns column to measure table if it doesn't exist."""
+        pass
+
+    @abstractmethod
+    def upgrade_mrn_schema(self):
+        """Upgrade the patient table mrn column from INTEGER to TEXT if needed."""
+        pass
+
+    @abstractmethod
+    def check_mrn_column_is_text(self) -> bool:
+        """Check if the mrn column in the patient table is TEXT/VARCHAR. Returns True if it is TEXT."""
+        pass
+
+    @abstractmethod
+    def _column_exists(self, cursor, table_name: str, column_name: str) -> bool:
+        """Check if a column exists in a table."""
+        pass
+
+    @abstractmethod
     def select_all_devices(self):
         pass
 
@@ -176,7 +196,8 @@ class SQLHandler(ABC):
                 delete_query = "DELETE FROM block_index WHERE id = ?;"
                 cursor.executemany(delete_query, [(block_id,) for block_id in block_ids_to_delete])
 
-    def replace_intervals(self, measure_id: int, device_id: int, interval_list: List[List[int]]):
+    def replace_intervals(self, measure_id: int, device_id: int, interval_list: List[List[int]],
+                          batch_size: int = 1024):
         if len(interval_list) == 0:
             raise ValueError("This function deletes and replaces all intervals. `interval_list` cannot be empty")
 
@@ -188,14 +209,20 @@ class SQLHandler(ABC):
             """
             cursor.execute(delete_query, (measure_id, device_id))
 
-            # Insert new intervals into the interval_index table
+            # Prepare interval tuples
+            interval_tuples = [(int(measure_id), int(device_id), int(start_time), int(end_time))
+                               for (start_time, end_time) in interval_list]
+
+            # Insert new intervals in batches
             insert_query = """
                 INSERT INTO interval_index (measure_id, device_id, start_time_n, end_time_n)
                 VALUES (?, ?, ?, ?);
             """
-            interval_tuples = [(int(measure_id), int(device_id), int(start_time), int(end_time))
-                               for (start_time, end_time) in interval_list]
-            cursor.executemany(insert_query, interval_tuples)
+
+            # Process intervals in batches
+            for i in range(0, len(interval_tuples), batch_size):
+                batch = interval_tuples[i:i + batch_size]
+                cursor.executemany(insert_query, batch)
 
     @abstractmethod
     def update_tsc_file_data(self, file_data: Dict[str, Tuple[List[Dict], List[Dict]]], block_ids_to_delete: List[int],
@@ -399,21 +426,29 @@ class SQLHandler(ABC):
         # Insert device_encounter if it doesn't exist, return id.
         pass
 
-    def get_device_time_ranges_by_patient(self, patient_id: int, end_time_n: Optional[int], start_time_n: Optional[int]):
+    def get_device_time_ranges_by_patient(self, patient_id: int, end_time_n: Optional[int],
+                                          start_time_n: Optional[int]):
         patient_device_query = "SELECT device_id, start_time, end_time FROM device_patient WHERE patient_id = ?"
         args = (int(patient_id),)
-
         if start_time_n is not None:
             patient_device_query += " AND (end_time >= ? OR end_time is NULL) "
             args += (int(start_time_n),)
         if end_time_n is not None:
             patient_device_query += " AND start_time <= ? "
             args += (int(end_time_n),)
-
         patient_device_query += " ORDER BY start_time, end_time"
         with self.connection(begin=False) as (conn, cursor):
             cursor.execute(patient_device_query, args)
-            return cursor.fetchall()
+            results = cursor.fetchall()
+
+            # Replace None end_time with current nanosecond epoch
+            current_time_ns = time.time_ns()
+            results = [
+                (device_id, start_time, end_time if end_time is not None else current_time_ns)
+                for device_id, start_time, end_time in results
+            ]
+
+            return results
 
     @abstractmethod
     def select_all_settings(self):
@@ -478,7 +513,7 @@ class SQLHandler(ABC):
             return cursor.fetchall()
 
     @abstractmethod
-    def select_encounters(self, patient_id_list: Optional[List[int]] = None, mrn_list: Optional[List[int]] = None, start_time: Optional[int] = None,
+    def select_encounters(self, patient_id_list: Optional[List[int]] = None, mrn_list: Optional[List[str]] = None, start_time: Optional[int] = None,
                           end_time: Optional[int] = None):
         # Get all matching encounters.
         pass
@@ -489,7 +524,7 @@ class SQLHandler(ABC):
         pass
 
     @abstractmethod
-    def select_all_patients_in_list(self, patient_id_list: Optional[List[int]] = None, mrn_list: Optional[List[int]] = None):
+    def select_all_patients_in_list(self, patient_id_list: Optional[List[int]] = None, mrn_list: Optional[List[str]] = None):
         # Get all matching patients.
         pass
 

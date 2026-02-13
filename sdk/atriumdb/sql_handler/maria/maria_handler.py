@@ -230,6 +230,57 @@ class MariaDBHandler(SQLHandler):
         cursor.close()
         conn.close()
 
+    def _column_exists(self, cursor, table_name: str, column_name: str) -> bool:
+        """Check if a column exists in a table."""
+        cursor.execute("""
+            SELECT COUNT(*) 
+            FROM information_schema.COLUMNS 
+            WHERE TABLE_SCHEMA = ? 
+            AND TABLE_NAME = ? 
+            AND COLUMN_NAME = ?
+        """, (self.database, table_name, column_name))
+        return cursor.fetchone()[0] > 0
+
+    def update_measure_schema(self):
+        """Add period_ns column to measure table if it doesn't exist."""
+        with self.connection() as (conn, cursor):
+            if not self._column_exists(cursor, 'measure', 'period_ns'):
+                cursor.execute("""
+                    ALTER TABLE measure 
+                    ADD COLUMN period_ns BIGINT NULL
+                """)
+                conn.commit()
+                return True
+            return False
+
+    def check_mrn_column_is_text(self) -> bool:
+        """Check if the mrn column in the patient table is VARCHAR/TEXT. Returns True if it is."""
+        with self.connection() as (conn, cursor):
+            cursor.execute("""
+                SELECT DATA_TYPE 
+                FROM information_schema.COLUMNS 
+                WHERE TABLE_SCHEMA = ? 
+                AND TABLE_NAME = 'patient' 
+                AND COLUMN_NAME = 'mrn'
+            """, (self.database,))
+            result = cursor.fetchone()
+            if result is None:
+                return False
+            return result[0].upper() in ('VARCHAR', 'TEXT', 'CHAR')
+
+    def upgrade_mrn_schema(self):
+        """Upgrade the patient table mrn column from INT to VARCHAR if needed."""
+        if self.check_mrn_column_is_text():
+            return False  # Already VARCHAR/TEXT, no upgrade needed
+
+        with self.connection() as (conn, cursor):
+            cursor.execute("""
+                ALTER TABLE patient 
+                MODIFY COLUMN mrn VARCHAR(255) NULL
+            """)
+            conn.commit()
+            return True
+
     def select_all_devices(self):
         with self.maria_db_connection() as (conn, cursor):
             cursor.execute("SELECT id, tag, name, manufacturer, model, type, bed_id, source_id FROM device")
@@ -237,10 +288,21 @@ class MariaDBHandler(SQLHandler):
         return rows
 
     def select_all_measures(self):
-        with self.maria_db_connection() as (conn, cursor):
-            cursor.execute("SELECT id, tag, name, freq_nhz, code, unit, unit_label, unit_code, source_id FROM measure")
-            rows = cursor.fetchall()
-        return rows
+        try:
+            with self.maria_db_connection() as (conn, cursor):
+                cursor.execute("""
+                    SELECT id, tag, name, freq_nhz, period_ns, code, unit, unit_label, unit_code, source_id 
+                    FROM measure
+                """)
+                rows = cursor.fetchall()
+            return rows
+        except mariadb.Error as e:
+            if "period_ns" in str(e).lower() or "unknown column" in str(e).lower():
+                raise ValueError(
+                    "The 'period_ns' column is missing from the measure table. "
+                    "Please run AtriumSDK(auto_upgrade=True) to update the database schema."
+                ) from e
+            raise
 
     def select_all_patients(self):
         with self.maria_db_connection() as (conn, cursor):
@@ -250,28 +312,45 @@ class MariaDBHandler(SQLHandler):
 
     def insert_measure(self, measure_tag: str, freq_nhz: int, units: str = None, measure_name: str = None,
                        measure_id=None, code: str = None, unit_label: str = None, unit_code: str = None,
-                       source_id: int = None):
+                       source_id: int = None, period_ns: int = None):
         units = DEFAULT_UNITS if units is None else units
 
-        with self.connection() as (conn, cursor):
-            cursor.execute(
-                "INSERT IGNORE INTO measure (id, tag, freq_nhz, unit, name, code, unit_label, unit_code, source_id) VALUES "
-                "(?, ?, ?, ?, ?, ?, ?, ?, ?);",
-                (measure_id, measure_tag, freq_nhz, units, measure_name, code, unit_label, unit_code, source_id))
-            conn.commit()
-
-            return cursor.lastrowid
+        try:
+            with self.connection() as (conn, cursor):
+                cursor.execute(
+                    "INSERT IGNORE INTO measure (id, tag, freq_nhz, period_ns, unit, name, code, unit_label, unit_code, source_id) VALUES "
+                    "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
+                    (measure_id, measure_tag, freq_nhz, period_ns, units, measure_name, code, unit_label, unit_code,
+                     source_id))
+                conn.commit()
+                return cursor.lastrowid
+        except mariadb.Error as e:
+            if "period_ns" in str(e).lower() or "unknown column" in str(e).lower():
+                raise ValueError(
+                    "The 'period_ns' column is missing from the measure table. "
+                    "Please run AtriumSDK(auto_upgrade=True) to update the database schema."
+                ) from e
+            raise
 
     def select_measure(self, measure_id: int = None, measure_tag: str = None, freq_nhz: int = None, units: str = None):
         units = DEFAULT_UNITS if units is None else units
-        with self.maria_db_connection() as (conn, cursor):
-            if measure_id is not None:
-                cursor.execute(maria_select_measure_from_id, (measure_id,))
-            else:
-                cursor.execute(maria_select_measure_from_triplet_query, (measure_tag, freq_nhz, units))
-            row = cursor.fetchone()
 
-        return row
+        try:
+            with self.maria_db_connection() as (conn, cursor):
+                if measure_id is not None:
+                    cursor.execute(maria_select_measure_from_id, (measure_id,))
+                else:
+                    cursor.execute(maria_select_measure_from_triplet_query, (measure_tag, freq_nhz, units))
+                row = cursor.fetchone()
+
+            return row
+        except mariadb.Error as e:
+            if "period_ns" in str(e).lower() or "unknown column" in str(e).lower():
+                raise ValueError(
+                    "The 'period_ns' column is missing from the measure table. "
+                    "Please run AtriumSDK(auto_upgrade=True) to update the database schema."
+                ) from e
+            raise
 
     def insert_device(self, device_tag: str, device_name: str = None, device_id=None, manufacturer: str = None,
                       model: str = None, device_type: str = None, bed_id: int = None, source_id: int = None):
@@ -540,7 +619,21 @@ class MariaDBHandler(SQLHandler):
                     cursor.execute(block_query, args)
                     block_results.extend(cursor.fetchall())
 
-            return block_results
+            # Filter results based on start_time_n and end_time_n parameters
+            filtered_results = []
+            for row in block_results:
+                row_start_time = row[6]  # start_time_n
+                row_end_time = row[7]  # end_time_n
+
+                # Check for overlap with parameter time range
+                if start_time_n is not None and row_end_time < start_time_n:
+                    continue  # Row ends before parameter start - no overlap
+                if end_time_n is not None and row_start_time > end_time_n:
+                    continue  # Row starts after parameter end - no overlap
+
+                filtered_results.append(row)
+
+            return filtered_results
 
         # Query by device.
         block_query = """
@@ -566,7 +659,7 @@ class MariaDBHandler(SQLHandler):
             cursor.execute(block_query, args)
             return cursor.fetchall()
 
-    def select_encounters(self, patient_id_list: List[int] = None, mrn_list: List[int] = None, start_time: int = None,
+    def select_encounters(self, patient_id_list: List[int] = None, mrn_list: List[str] = None, start_time: int = None,
                           end_time: int = None):
         assert (patient_id_list is None) != (mrn_list is None), "Either patient_id_list or mrn_list must be provided, but not both"
         arg_tuple = ()
@@ -604,7 +697,7 @@ class MariaDBHandler(SQLHandler):
             rows = cursor.fetchall()
         return rows
 
-    def select_all_patients_in_list(self, patient_id_list: List[int] = None, mrn_list: List[int] = None):
+    def select_all_patients_in_list(self, patient_id_list: List[int] = None, mrn_list: List[str] = None):
         if patient_id_list is not None:
             placeholders = ', '.join(['?'] * len(patient_id_list))
             maria_select_patients_by_id_list = f"SELECT id, mrn, gender, dob, first_name, middle_name, last_name, first_seen, last_updated, source_id, weight, height FROM patient WHERE id IN ({placeholders})"
