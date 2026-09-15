@@ -74,6 +74,17 @@ API Reference
    .. automethod:: get_iterator
    .. automethod:: get_interval_array
 
+.. autoclass:: atriumdb.intervals.Intervals
+
+   .. automethod:: __init__
+   .. automethod:: intersection
+   .. automethod:: difference
+   .. automethod:: union
+   .. automethod:: duration
+   .. automethod:: is_empty
+   .. automethod:: contains
+   .. automethod:: gaps
+
 .. autoclass:: atriumdb.DatasetDefinition
 
    .. automethod:: __init__
@@ -83,6 +94,7 @@ API Reference
    .. automethod:: add_measure
    .. automethod:: add_label
    .. automethod:: add_region
+   .. automethod:: combine
    .. automethod:: save
 
 .. autoclass:: atriumdb.DatasetIterator
@@ -92,6 +104,8 @@ API Reference
 
 
 .. autofunction:: partition_dataset
+.. autofunction:: combine_definitions
+.. autofunction:: cross_validate_dataset
 .. autofunction:: transfer_data
 
 
